@@ -1,0 +1,135 @@
+// SaveHub data model
+// Step 2: Auth.js v5 with Google OAuth + Prisma adapter.
+// Account/Session/VerificationToken models are required by @auth/prisma-adapter.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id             String       @id @default(cuid())
+  email          String       @unique
+  name           String?
+  image          String?
+  emailVerified  DateTime?
+  createdAt      DateTime     @default(now())
+  // Telegram bot linking — set once the user runs `/start <code>` on the bot.
+  telegramChatId String?      @unique
+  // WhatsApp Business Cloud linking — set once the user sends `/start <code>`
+  // to the bot's WhatsApp number. Stores the wa_id (phone, no `+`).
+  whatsappWaId   String?      @unique
+
+  accounts            Account[]
+  sessions            Session[]
+  collections         Collection[]
+  items               SavedItem[]
+  telegramLinkTokens  TelegramLinkToken[]
+  whatsappLinkTokens  WhatsappLinkToken[]
+}
+
+// Short-lived 6-character codes that bridge a logged-in web session to a
+// Telegram chat. Created when the user clicks "Conectar Telegram"; consumed
+// when the bot receives `/start <code>`.
+model TelegramLinkToken {
+  token     String   @id
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+// Same pattern as TelegramLinkToken, for the WhatsApp side.
+model WhatsappLinkToken {
+  token     String   @id
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+model Collection {
+  id        String      @id @default(cuid())
+  name      String
+  userId    String
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items     SavedItem[]
+  createdAt DateTime    @default(now())
+
+  @@unique([userId, name])
+}
+
+model SavedItem {
+  id           String     @id @default(cuid())
+  title        String
+  source       String // youtube | instagram | tiktok | twitter | whatsapp | telegram | web
+  sourceLabel  String
+  type         String
+  url          String
+  description  String
+  summary      String
+  tags         String // JSON-encoded string array (SQLite has no native arrays)
+  status       String     @default("Para usar")
+  summarized   Boolean    @default(false)
+  image        String
+
+  // Set when the item came from a Telegram media message (photo, video,
+  // audio, document, voice, video_note). The `url` field holds a SaveHub
+  // proxy URL `/api/telegram/file/<itemId>`; the proxy resolves this id at
+  // request time so we never expose the bot token to clients.
+  telegramFileId String?
+
+  userId       String
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  collectionId String
+  collection   Collection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  @@index([userId, createdAt])
+  @@index([userId, source])
+}
