@@ -212,14 +212,14 @@ export default function SaveHubApp({
               <Icon name="layers" />
               <span>Coleções</span>
             </Link>
-            <button
-              className={`rail-item${nav === "ideas" ? " is-active" : ""}`}
-              type="button"
-              onClick={() => handleNavClick("ideas")}
+            <Link
+              href="/ideas"
+              prefetch={false}
+              className="rail-item"
             >
               <Icon name="sparkles" />
               <span>Ideias</span>
-            </button>
+            </Link>
             <button
               className={`rail-item${nav === "profile" ? " is-active" : ""}`}
               type="button"
@@ -639,22 +639,22 @@ export default function SaveHubApp({
           <Icon name="archive" />
           <span>Biblioteca</span>
         </button>
-        <button
-          className={`mobile-nav-item${nav === "collections" ? " is-active" : ""}`}
-          type="button"
-          onClick={() => handleNavClick("collections")}
+        <Link
+          href="/collections"
+          prefetch={false}
+          className="mobile-nav-item"
         >
           <Icon name="layers" />
           <span>Coleções</span>
-        </button>
-        <button
-          className={`mobile-nav-item${nav === "ideas" ? " is-active" : ""}`}
-          type="button"
-          onClick={() => handleNavClick("ideas")}
+        </Link>
+        <Link
+          href="/ideas"
+          prefetch={false}
+          className="mobile-nav-item"
         >
           <Icon name="sparkles" />
           <span>Ideias</span>
-        </button>
+        </Link>
         <button
           className={`mobile-nav-item${nav === "profile" ? " is-active" : ""}`}
           type="button"

@@ -31,3 +31,31 @@ export type SavedItem = {
 
 export type SortOption = "recent" | "source" | "collection";
 export type FilterOption = Source | "all";
+
+export type IdeaPlatform =
+  | "instagram-reels"
+  | "instagram-carousel"
+  | "instagram-post"
+  | "youtube-short"
+  | "youtube-long";
+
+export type IdeaStatus = "draft" | "used" | "discarded";
+
+// UI-shaped Idea: arrays parsed out of the JSON-encoded SQLite columns.
+export type UIIdea = {
+  id: string;
+  title: string;
+  hook: string;
+  angle: string;
+  structure: string[];
+  cta: string;
+  hashtags: string[];
+  platform: IdeaPlatform;
+  status: IdeaStatus;
+  notes: string;
+  sourceCollection: { id: string; name: string } | null;
+  sourceItemIds: string[];
+  // Pre-formatted relative day, paired with createdAt for stable sort.
+  date: string;
+  createdAt: Date;
+};

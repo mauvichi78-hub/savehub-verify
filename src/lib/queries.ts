@@ -1,9 +1,19 @@
 import "server-only";
 
-import type { Collection, SavedItem as DBSavedItem } from "@prisma/client";
+import type {
+  Collection,
+  Idea as DBIdea,
+  SavedItem as DBSavedItem,
+} from "@prisma/client";
 import { prisma } from "./db";
 import { getCurrentUserId } from "./session";
-import type { SavedItem, Source } from "./types";
+import type {
+  IdeaPlatform,
+  IdeaStatus,
+  SavedItem,
+  Source,
+  UIIdea,
+} from "./types";
 import { formatRelativeDate, formatTime } from "./format";
 
 type ItemWithCollection = DBSavedItem & { collection: Collection };
@@ -93,6 +103,69 @@ export async function getItem(
   if (!row) return null;
   const now = new Date();
   return { item: dbItemToUI(row, now), collectionId: row.collectionId };
+}
+
+// ---------------------------------------------------------------------------
+// Ideas
+// ---------------------------------------------------------------------------
+
+function parseStringArray(raw: string): string[] {
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed)
+      ? parsed.filter((s): s is string => typeof s === "string")
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+type IdeaRow = DBIdea & { sourceCollection: Collection | null };
+
+function dbIdeaToUI(row: IdeaRow, now: Date): UIIdea {
+  return {
+    id: row.id,
+    title: row.title,
+    hook: row.hook,
+    angle: row.angle,
+    structure: parseStringArray(row.structure),
+    cta: row.cta,
+    hashtags: parseStringArray(row.hashtags),
+    platform: row.platform as IdeaPlatform,
+    status: row.status as IdeaStatus,
+    notes: row.notes,
+    sourceCollection: row.sourceCollection
+      ? { id: row.sourceCollection.id, name: row.sourceCollection.name }
+      : null,
+    sourceItemIds: parseStringArray(row.sourceItemIds),
+    date: formatRelativeDate(row.createdAt, now),
+    createdAt: row.createdAt,
+  };
+}
+
+export type IdeaFilters = {
+  collectionId?: string;
+  platform?: IdeaPlatform;
+  status?: IdeaStatus;
+};
+
+// All ideas owned by the current user, newest first, optionally filtered.
+export async function listIdeas(filters: IdeaFilters = {}): Promise<UIIdea[]> {
+  const userId = await getCurrentUserId();
+  const rows = await prisma.idea.findMany({
+    where: {
+      userId,
+      ...(filters.collectionId
+        ? { sourceCollectionId: filters.collectionId }
+        : {}),
+      ...(filters.platform ? { platform: filters.platform } : {}),
+      ...(filters.status ? { status: filters.status } : {}),
+    },
+    include: { sourceCollection: true },
+    orderBy: { createdAt: "desc" },
+  });
+  const now = new Date();
+  return rows.map((row) => dbIdeaToUI(row, now));
 }
 
 // Items in a single collection — for /collections/[id]. Throws if the
