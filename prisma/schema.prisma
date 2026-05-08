@@ -28,6 +28,7 @@ model User {
   sessions            Session[]
   collections         Collection[]
   items               SavedItem[]
+  ideas               Idea[]
   telegramLinkTokens  TelegramLinkToken[]
   whatsappLinkTokens  WhatsappLinkToken[]
 }
@@ -97,6 +98,7 @@ model Collection {
   userId    String
   user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
   items     SavedItem[]
+  ideas     Idea[]
   createdAt DateTime    @default(now())
 
   @@unique([userId, name])
@@ -132,4 +134,47 @@ model SavedItem {
 
   @@index([userId, createdAt])
   @@index([userId, source])
+}
+
+// AI-generated content idea built on top of one or more SavedItems. The
+// generator (lib/ideas.ts) takes a Collection as input and returns a brief
+// shaped to be production-ready: hook, ângulo (the thesis), structure
+// (development bullets), CTA, and platform-aware hashtags.
+//
+// Lifecycle: draft (new) -> used (creator produced from it) | discarded.
+// `notes` is the creator's free-form annotation while iterating on the idea.
+//
+// sourceCollection uses SetNull so a deleted collection doesn't take its
+// generated ideas with it — the creator still has the brief to work from.
+model Idea {
+  id        String  @id @default(cuid())
+  userId    String
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  title     String
+  hook      String
+  angle     String
+  structure String  // JSON-encoded string array (SQLite has no native arrays)
+  cta       String
+  hashtags  String  // JSON-encoded string array
+
+  // One of: instagram-reels | instagram-carousel | instagram-post |
+  //         youtube-short  | youtube-long
+  platform  String
+
+  // Source attribution. Both nullable: collection can be deleted, items can
+  // be reorganized. The brief stands on its own once generated.
+  sourceCollectionId String?
+  sourceCollection   Collection? @relation(fields: [sourceCollectionId], references: [id], onDelete: SetNull)
+  sourceItemIds      String      // JSON-encoded array of SavedItem.id values
+
+  status    String   @default("draft") // draft | used | discarded
+  notes     String   @default("")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, createdAt])
+  @@index([userId, status])
+  @@index([sourceCollectionId])
 }
