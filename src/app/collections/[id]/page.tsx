@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Icon } from "@/components/Icon";
+import IdeaGeneratorButton from "@/components/IdeaGeneratorButton";
 import { listItemsInCollection } from "@/lib/queries";
 
 type PageParams = Promise<{ id: string }>;
@@ -43,6 +44,11 @@ export default async function CollectionDetailPage({
       <p className="settings-help">
         {items.length} {items.length === 1 ? "item" : "itens"} nessa coleção.
       </p>
+
+      <IdeaGeneratorButton
+        collectionId={collection.id}
+        hasItems={items.length > 0}
+      />
 
       {items.length === 0 ? (
         <p className="settings-help" style={{ marginTop: 16 }}>
