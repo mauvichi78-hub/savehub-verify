@@ -1,4 +1,5 @@
 import Link from "next/link";
+import IdeaActions from "./IdeaActions";
 import type { UIIdea } from "@/lib/types";
 import { PLATFORM_LABELS } from "@/lib/idea-display";
 
@@ -82,6 +83,12 @@ export default function IdeaCard({ idea }: Props) {
           {refCount} {refCount === 1 ? "referência" : "referências"}
         </span>
       </footer>
+
+      <IdeaActions
+        ideaId={idea.id}
+        status={idea.status}
+        notes={idea.notes}
+      />
     </article>
   );
 }

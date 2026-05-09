@@ -1785,3 +1785,85 @@ h3 {
   font-size: 13px;
   word-break: break-word;
 }
+
+/* ---------- Idea card actions (status / notes / delete) ---------- */
+
+.idea-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--line);
+}
+
+.idea-actions-status {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.idea-actions-status .filter-chip {
+  min-height: 32px;
+  padding: 0 12px;
+  font-size: 12px;
+}
+
+.idea-actions-notes-label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.idea-actions-notes {
+  width: 100%;
+  padding: 10px 12px;
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  font-family: inherit;
+  font-size: 14px;
+  color: var(--ink);
+  line-height: 1.4;
+  resize: vertical;
+  min-height: 60px;
+}
+
+.idea-actions-notes:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.idea-actions-notes-status {
+  min-height: 16px;
+  font-size: 11px;
+  color: var(--muted);
+  font-style: italic;
+}
+
+.idea-actions-foot {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.idea-delete-btn {
+  padding: 6px 12px;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.idea-delete-btn:hover:not(:disabled) {
+  color: var(--pink);
+  border-color: var(--pink);
+}
+
+.idea-delete-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
