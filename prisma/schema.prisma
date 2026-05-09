@@ -124,6 +124,12 @@ model SavedItem {
   // request time so we never expose the bot token to clients.
   telegramFileId String?
 
+  // Same idea for WhatsApp Cloud API media (image, video, audio, document,
+  // voice, sticker). The `url` points at `/api/whatsapp/file/<itemId>`,
+  // which resolves the media id and streams it with the access token kept
+  // server-side.
+  whatsappMediaId String?
+
   userId       String
   user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
   collectionId String

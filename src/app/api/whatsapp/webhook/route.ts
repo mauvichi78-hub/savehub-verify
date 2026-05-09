@@ -1,5 +1,8 @@
 import { NextResponse } from "next/server";
-import { handleIncomingWhatsappMessage } from "@/lib/whatsapp";
+import {
+  dispatchWhatsappMessage,
+  type WhatsappIncomingMessage,
+} from "@/lib/whatsapp";
 
 // Meta Cloud API webhook endpoint for the SaveHub WhatsApp bot.
 //
@@ -53,12 +56,7 @@ type WebhookPayload = {
   entry?: Array<{
     changes?: Array<{
       value?: {
-        messages?: Array<{
-          from?: string;
-          type?: string;
-          text?: { body?: string };
-          // Reply-to-context for forwarded messages, etc — we only handle text.
-        }>;
+        messages?: WhatsappIncomingMessage[];
         contacts?: Array<{ wa_id?: string }>;
       };
     }>;
@@ -73,13 +71,14 @@ export async function POST(req: Request) {
     return new NextResponse("Bad JSON", { status: 400 });
   }
 
-  // Pull all (waId, text) pairs out of Meta's nested envelope.
-  const messages: Array<{ waId: string; text: string }> = [];
+  // Pull all (waId, message) pairs out of Meta's nested envelope. The
+  // dispatcher in lib/whatsapp.ts decides text vs media routing.
+  const messages: Array<{ waId: string; message: WhatsappIncomingMessage }> = [];
   for (const entry of body.entry ?? []) {
     for (const change of entry.changes ?? []) {
       for (const m of change.value?.messages ?? []) {
-        if (m.type !== "text" || !m.from || !m.text?.body) continue;
-        messages.push({ waId: m.from, text: m.text.body });
+        if (!m.from) continue;
+        messages.push({ waId: m.from, message: m });
       }
     }
   }
@@ -87,8 +86,8 @@ export async function POST(req: Request) {
   // Don't await processing — return 200 immediately so Meta doesn't retry.
   // Each message is dispatched independently; failures are logged but the
   // ack still goes back to Meta cleanly.
-  for (const { waId, text } of messages) {
-    void handleIncomingWhatsappMessage(waId, text).catch((e) => {
+  for (const { waId, message } of messages) {
+    void dispatchWhatsappMessage(waId, message).catch((e) => {
       console.error("WhatsApp message handler crashed:", e);
     });
   }

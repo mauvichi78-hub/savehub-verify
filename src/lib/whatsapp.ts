@@ -2,6 +2,7 @@ import { prisma } from "./db";
 import { detectSource, sourceNames, sourceType, thumbnails } from "./data";
 import { fetchUrlMetadata } from "./url-metadata";
 import { summarizeAndSave } from "./summarize";
+import { transcribeWhatsappAudio } from "./transcribe";
 
 // ---------------------------------------------------------------------------
 // SaveHub WhatsApp bot — Meta Cloud API (graph.facebook.com).
@@ -280,6 +281,209 @@ export async function handleIncomingWhatsappMessage(
     return;
   }
   await handleSaveMessage(waId, trimmed);
+}
+
+// ---------------------------------------------------------------------------
+// Media saves: image | video | audio | document | voice | sticker.
+// Mirrors the Telegram media path. The SavedItem stores the WA media id;
+// `url` points at our /api/whatsapp/file/<itemId> proxy so the access
+// token never leaves the server. Voice messages additionally chain into
+// Whisper transcription via transcribeWhatsappAudio.
+// ---------------------------------------------------------------------------
+
+// Minimal shape of an incoming WA message. The webhook payload is much
+// richer; we only model fields we actually consume.
+export type WhatsappIncomingMessage = {
+  from?: string;
+  type?: string;
+  text?: { body?: string };
+  image?: { id?: string; caption?: string; mime_type?: string };
+  video?: { id?: string; caption?: string; mime_type?: string };
+  audio?: { id?: string; voice?: boolean; mime_type?: string };
+  document?: { id?: string; caption?: string; filename?: string; mime_type?: string };
+  voice?: { id?: string; mime_type?: string };
+  sticker?: { id?: string; mime_type?: string };
+};
+
+type WhatsappMediaKind =
+  | "image"
+  | "video"
+  | "audio"
+  | "voice"
+  | "document"
+  | "sticker";
+
+const MEDIA_LABEL: Record<WhatsappMediaKind, string> = {
+  image: "Imagem",
+  video: "Vídeo",
+  audio: "Áudio",
+  voice: "Voice",
+  document: "Documento",
+  sticker: "Sticker",
+};
+
+type ReadMedia = {
+  mediaId: string;
+  mediaKind: WhatsappMediaKind;
+  caption: string;
+  filename?: string;
+};
+
+// Pull the (mediaId, kind, caption) tuple from whichever type the WA
+// message carries. Returns null if there's no recognized media.
+//
+// Notes on the WA payload quirks:
+//   • Voice clips arrive under message.voice in newer API versions and
+//     under message.audio with `voice: true` in older ones. We accept both.
+//   • Stickers and documents have no caption.
+function readWhatsappMedia(m: WhatsappIncomingMessage): ReadMedia | null {
+  if (m.image?.id) {
+    return { mediaId: m.image.id, mediaKind: "image", caption: m.image.caption ?? "" };
+  }
+  if (m.video?.id) {
+    return { mediaId: m.video.id, mediaKind: "video", caption: m.video.caption ?? "" };
+  }
+  if (m.voice?.id) {
+    return { mediaId: m.voice.id, mediaKind: "voice", caption: "" };
+  }
+  if (m.audio?.id) {
+    return {
+      mediaId: m.audio.id,
+      mediaKind: m.audio.voice ? "voice" : "audio",
+      caption: "",
+    };
+  }
+  if (m.document?.id) {
+    return {
+      mediaId: m.document.id,
+      mediaKind: "document",
+      caption: m.document.caption ?? "",
+      filename: m.document.filename,
+    };
+  }
+  if (m.sticker?.id) {
+    return { mediaId: m.sticker.id, mediaKind: "sticker", caption: "" };
+  }
+  return null;
+}
+
+async function saveMediaForWhatsappUser(
+  userId: string,
+  input: ReadMedia,
+): Promise<{ item: { id: string }; collection: { name: string } }> {
+  const fallbackName = "Roteiros";
+  const collection = await prisma.collection.upsert({
+    where: { userId_name: { userId, name: fallbackName } },
+    update: {},
+    create: { userId, name: fallbackName },
+  });
+
+  const mediaTypeLabel = MEDIA_LABEL[input.mediaKind];
+  const baseTitle = input.caption.split("\n")[0]?.slice(0, 80);
+  const fallbackTitle = input.filename || `${mediaTypeLabel} via WhatsApp`;
+  const title = baseTitle && baseTitle.length > 0 ? baseTitle : fallbackTitle;
+  const description =
+    input.caption || `${mediaTypeLabel} encaminhada via WhatsApp.`;
+
+  // Two-step: create with placeholder url, then patch to point at the proxy
+  // (path needs the just-generated item id).
+  const created = await prisma.savedItem.create({
+    data: {
+      title,
+      source: "whatsapp",
+      sourceLabel: "WhatsApp",
+      type: mediaTypeLabel,
+      url: "",
+      description,
+      summary:
+        input.mediaKind === "voice"
+          ? "Transcrevendo..."
+          : `${mediaTypeLabel} salvo via WhatsApp. Sem resumo automático no MVP.`,
+      tags: JSON.stringify([
+        collection.name.toLowerCase(),
+        "whatsapp",
+        input.mediaKind,
+      ]),
+      status: "Para usar",
+      summarized: input.mediaKind !== "voice",
+      // Same image-vs-non-image guard as Telegram: only point image at the
+      // proxy so the library card thumbnail renders. Other kinds get no
+      // thumbnail (an <img> can't render video/audio bytes).
+      image: "",
+      whatsappMediaId: input.mediaId,
+      userId,
+      collectionId: collection.id,
+    },
+  });
+
+  const proxyUrl = `/api/whatsapp/file/${created.id}`;
+  const item = await prisma.savedItem.update({
+    where: { id: created.id },
+    data: {
+      url: proxyUrl,
+      ...(input.mediaKind === "image" ? { image: proxyUrl } : {}),
+    },
+    select: { id: true },
+  });
+
+  return { item, collection };
+}
+
+async function handleIncomingWhatsappMedia(
+  waId: string,
+  message: WhatsappIncomingMessage,
+): Promise<void> {
+  const user = await findUserByWa(waId);
+  if (!user) {
+    await sendWhatsappReply(
+      waId,
+      "Este número ainda não está vinculado. Use /start <código> com o código gerado no app SaveHub.",
+    );
+    return;
+  }
+  const media = readWhatsappMedia(message);
+  if (!media) {
+    // The dispatcher already filtered to media types, so this would be a
+    // payload we don't model yet (e.g. location, contact). Silently bail.
+    return;
+  }
+  try {
+    const { item, collection } = await saveMediaForWhatsappUser(user.id, media);
+    if (media.mediaKind === "voice") {
+      void transcribeWhatsappAudio(item.id, media.mediaId);
+      await sendWhatsappReply(
+        waId,
+        `Salvo: voice → ${collection.name}\nTranscrevendo... vai aparecer no app em alguns segundos.`,
+      );
+    } else {
+      await sendWhatsappReply(
+        waId,
+        `Salvo: ${MEDIA_LABEL[media.mediaKind]} → ${collection.name}`,
+      );
+    }
+  } catch (e) {
+    console.error("WhatsApp media save failed:", e);
+    await sendWhatsappReply(
+      waId,
+      "Não consegui salvar essa mídia. Tenta de novo em alguns segundos.",
+    );
+  }
+}
+
+// Single entry point for the webhook — routes text vs media. Keeping the
+// dispatch in this module (instead of inline in the webhook route) so the
+// webhook stays focused on parsing the Meta envelope.
+export async function dispatchWhatsappMessage(
+  waId: string,
+  message: WhatsappIncomingMessage,
+): Promise<void> {
+  if (message.type === "text" && message.text?.body) {
+    await handleIncomingWhatsappMessage(waId, message.text.body);
+    return;
+  }
+  // Anything else with a recognized media field goes through the media
+  // path. readWhatsappMedia inside handles the second-level filter.
+  await handleIncomingWhatsappMedia(waId, message);
 }
 
 // 6-character alphanumeric code, ambiguous chars (0/O, 1/I) excluded.

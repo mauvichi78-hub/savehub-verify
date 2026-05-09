@@ -46,11 +46,76 @@ function getClient(): OpenAI {
   return globalForGroq.groq;
 }
 
-// Groq's whisper endpoint accepts up to 25 MB. Telegram voice notes are
-// well under (typically <2 MB for a few minutes of audio), but we cap
-// defensively before paying for the upload round-trip.
+// Groq's whisper endpoint accepts up to 25 MB. Telegram/WhatsApp voice
+// notes are well under (typically <2 MB for a few minutes of audio),
+// but we cap defensively before paying for the upload round-trip.
 const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
 
+// Common path: Whisper transcription + DB update + chained summarization.
+// Both the Telegram and the WhatsApp wrapper land here once they've
+// downloaded the audio. Never throws — fire-and-forget callers don't have
+// a UI thread to surface errors to.
+async function transcribeBlobAndSave(
+  itemId: string,
+  audioBlob: Blob,
+  filename: string,
+): Promise<void> {
+  if (audioBlob.size > MAX_AUDIO_BYTES) {
+    console.warn(
+      `[transcribe] audio too large for Whisper (${audioBlob.size}b) — skipping ${itemId}`,
+    );
+    return;
+  }
+  try {
+    const audioFile = new File([audioBlob], filename, {
+      // Telegram voice = OGG/Opus, WhatsApp voice = OGG/Opus too,
+      // WhatsApp audio messages may be AAC/M4A. Whisper handles all three.
+      type: audioBlob.type || "audio/ogg",
+    });
+    const transcription = await getClient().audio.transcriptions.create({
+      file: audioFile,
+      model: TRANSCRIPTION_MODEL,
+      // Force pt-BR to avoid auto-detect drift on short clips.
+      language: "pt",
+      response_format: "text",
+    });
+    const text = String(transcription).trim();
+    if (!text) {
+      console.warn(`[transcribe] empty transcript for ${itemId}`);
+      return;
+    }
+
+    const titleCandidate = text.split(/[.!?\n]/)[0]?.trim() ?? text;
+    const title =
+      titleCandidate.length > 80
+        ? titleCandidate.slice(0, 77) + "..."
+        : titleCandidate;
+    const description = text;
+
+    const updated = await prisma.savedItem.update({
+      where: { id: itemId },
+      data: {
+        title,
+        description,
+        summary: "Resumindo...",
+        summarized: false,
+      },
+      select: { id: true, source: true, url: true },
+    });
+
+    // Now that we have real text, run the AI summary on top of it.
+    void summarizeAndSave(updated.id, {
+      title,
+      description,
+      url: updated.url,
+      source: updated.source as Parameters<typeof summarizeAndSave>[1]["source"],
+    });
+  } catch (e) {
+    console.error(`[transcribe] whisper/save failed for ${itemId}:`, e);
+  }
+}
+
+// Telegram voice transcription: file_id -> download -> transcribe pipeline.
 export async function transcribeAndSave(
   itemId: string,
   telegramFileId: string,
@@ -68,7 +133,6 @@ export async function transcribeAndSave(
   }
 
   try {
-    // 1. file_id -> file_path
     const metaRes = await fetch(
       `https://api.telegram.org/bot${botToken}/getFile?file_id=${encodeURIComponent(telegramFileId)}`,
     );
@@ -91,7 +155,6 @@ export async function transcribeAndSave(
       return;
     }
 
-    // 2. Download the audio file.
     const audioRes = await fetch(
       `https://api.telegram.org/file/bot${botToken}/${meta.result.file_path}`,
     );
@@ -100,53 +163,71 @@ export async function transcribeAndSave(
       return;
     }
     const audioBlob = await audioRes.blob();
-
-    // 3. Whisper transcription via Groq. Telegram voice is OGG/Opus, which
-    // Whisper accepts directly. Force pt-BR to avoid auto-detect drift on
-    // short clips.
-    const audioFile = new File([audioBlob], "voice.ogg", {
-      type: audioBlob.type || "audio/ogg",
-    });
-    const transcription = await getClient().audio.transcriptions.create({
-      file: audioFile,
-      model: TRANSCRIPTION_MODEL,
-      language: "pt",
-      response_format: "text",
-    });
-    const text = String(transcription).trim();
-
-    if (!text) {
-      console.warn(`[transcribe] empty transcript for ${itemId}`);
-      return;
-    }
-
-    // 4. Update the saved item with the real text.
-    const titleCandidate = text.split(/[.!?\n]/)[0]?.trim() ?? text;
-    const title =
-      titleCandidate.length > 80
-        ? titleCandidate.slice(0, 77) + "..."
-        : titleCandidate;
-    const description = text;
-
-    const updated = await prisma.savedItem.update({
-      where: { id: itemId },
-      data: {
-        title,
-        description,
-        summary: "Resumindo...",
-        summarized: false,
-      },
-      select: { id: true, source: true, url: true },
-    });
-
-    // 5. Now that we have real text, run the AI summary on top of it.
-    void summarizeAndSave(updated.id, {
-      title,
-      description,
-      url: updated.url,
-      source: updated.source as Parameters<typeof summarizeAndSave>[1]["source"],
-    });
+    await transcribeBlobAndSave(itemId, audioBlob, "voice.ogg");
   } catch (e) {
-    console.error(`[transcribe] failed for ${itemId}:`, e);
+    console.error(`[transcribe] telegram pipeline failed for ${itemId}:`, e);
   }
+}
+
+// WhatsApp voice transcription: media_id -> Meta Graph 2-step download ->
+// transcribe pipeline. media URLs from Graph expire in ~5 min, so we
+// resolve and download in one go.
+export async function transcribeWhatsappAudio(
+  itemId: string,
+  mediaId: string,
+): Promise<void> {
+  if (!readKey()) {
+    console.warn(
+      `[transcribe] no Groq key (SAVEHUB_GROQ_KEY / GROQ_API_KEY) — skipping ${itemId}`,
+    );
+    return;
+  }
+  const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
+  if (!accessToken) {
+    console.warn(`[transcribe] WHATSAPP_ACCESS_TOKEN missing — skipping ${itemId}`);
+    return;
+  }
+  try {
+    const blob = await downloadWhatsappMedia(mediaId, accessToken);
+    if (!blob) return;
+    // Whisper auto-detects the container, but giving an extension helps
+    // some pipelines. WhatsApp voice is OGG/Opus, audio messages may be M4A.
+    await transcribeBlobAndSave(itemId, blob, "voice.ogg");
+  } catch (e) {
+    console.error(`[transcribe] whatsapp pipeline failed for ${itemId}:`, e);
+  }
+}
+
+// Two-step Meta Graph media download:
+//   GET /<media-id>           -> { url, mime_type, ... }
+//   GET <url> with Bearer     -> bytes
+// Returns null and logs on any failure.
+async function downloadWhatsappMedia(
+  mediaId: string,
+  accessToken: string,
+): Promise<Blob | null> {
+  const metaRes = await fetch(
+    `https://graph.facebook.com/v21.0/${encodeURIComponent(mediaId)}`,
+    { headers: { Authorization: `Bearer ${accessToken}` } },
+  );
+  if (!metaRes.ok) {
+    console.error(
+      `[transcribe] WA media meta failed (${mediaId}):`,
+      metaRes.status,
+    );
+    return null;
+  }
+  const meta = (await metaRes.json()) as { url?: string; mime_type?: string };
+  if (!meta.url) {
+    console.error(`[transcribe] WA media meta missing url (${mediaId})`);
+    return null;
+  }
+  const fileRes = await fetch(meta.url, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!fileRes.ok) {
+    console.error(`[transcribe] WA media fetch failed (${mediaId}):`, fileRes.status);
+    return null;
+  }
+  return await fileRes.blob();
 }
