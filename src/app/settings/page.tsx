@@ -1,18 +1,28 @@
 import Link from "next/link";
+import AccountSection from "@/components/AccountSection";
 import TelegramConnect from "@/components/TelegramConnect";
 import WhatsappConnect from "@/components/WhatsappConnect";
 import { Icon } from "@/components/Icon";
 import { getTelegramConnection, getWhatsappConnection } from "@/app/actions";
+import { signOut } from "@/auth";
+import { getCurrentUser } from "@/lib/session";
 
-// Settings hub. Hosts opt-in messaging integrations (WhatsApp, Telegram) —
-// kept off the home so users who don't use them aren't nagged by them.
+// Settings hub. Hosts the account block (sign-out) plus opt-in messaging
+// integrations (WhatsApp, Telegram) — kept off the home so users who don't
+// use them aren't nagged by them.
 export default async function SettingsPage() {
-  const [telegram, whatsapp] = await Promise.all([
+  const [telegram, whatsapp, user] = await Promise.all([
     getTelegramConnection(),
     getWhatsappConnection(),
+    getCurrentUser(),
   ]);
   const botUsername = process.env.TELEGRAM_BOT_USERNAME ?? null;
   const waNumber = process.env.WHATSAPP_BUSINESS_NUMBER ?? null;
+
+  async function handleSignOut() {
+    "use server";
+    await signOut({ redirectTo: "/login" });
+  }
 
   return (
     <main className="settings-shell">
@@ -30,6 +40,15 @@ export default async function SettingsPage() {
           <h1>Configurações</h1>
         </div>
       </header>
+
+      {user && (
+        <section aria-label="Conta">
+          <div className="section-heading">
+            <h2>Conta</h2>
+          </div>
+          <AccountSection user={user} signOutAction={handleSignOut} />
+        </section>
+      )}
 
       <section aria-label="Integrações">
         <div className="section-heading">

@@ -155,11 +155,11 @@ export default function SaveHubApp({
     toastTimer.current = window.setTimeout(() => setToast(null), 2400);
   }
 
+  // Only "library" routes through here now — collections/ideas/profile are
+  // <Link>s. Kept as a function (not a setter inline) so future tab-style
+  // sub-views can plug in without touching the JSX.
   function handleNavClick(target: NavTarget) {
     setNav(target);
-    if (target !== "library") {
-      showToast("Área marcada para a próxima versão.");
-    }
   }
 
   function handleSubmit(e: FormEvent<HTMLFormElement>) {
@@ -220,14 +220,14 @@ export default function SaveHubApp({
               <Icon name="sparkles" />
               <span>Ideias</span>
             </Link>
-            <button
-              className={`rail-item${nav === "profile" ? " is-active" : ""}`}
-              type="button"
-              onClick={() => handleNavClick("profile")}
+            <Link
+              href="/settings"
+              prefetch={false}
+              className="rail-item"
             >
               <Icon name="user" />
               <span>Perfil</span>
-            </button>
+            </Link>
           </nav>
 
           {user && (
@@ -655,14 +655,14 @@ export default function SaveHubApp({
           <Icon name="sparkles" />
           <span>Ideias</span>
         </Link>
-        <button
-          className={`mobile-nav-item${nav === "profile" ? " is-active" : ""}`}
-          type="button"
-          onClick={() => handleNavClick("profile")}
+        <Link
+          href="/settings"
+          prefetch={false}
+          className="mobile-nav-item"
         >
           <Icon name="user" />
           <span>Perfil</span>
-        </button>
+        </Link>
       </nav>
 
       {sheetOpen && (
