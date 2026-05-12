@@ -370,13 +370,21 @@ function readWhatsappMedia(m: WhatsappIncomingMessage): ReadMedia | null {
 async function saveMediaForWhatsappUser(
   userId: string,
   input: ReadMedia,
-): Promise<{ item: { id: string }; collection: { name: string } }> {
+): Promise<{
+  item: { id: string };
+  collection: { name: string };
+  hashtagMatched: boolean | null;
+}> {
   const fallbackName = "Roteiros";
-  const collection = await prisma.collection.upsert({
-    where: { userId_name: { userId, name: fallbackName } },
-    update: {},
-    create: { userId, name: fallbackName },
-  });
+  const hashtags = extractHashtags(input.caption);
+  const requested = await resolveCollectionFromHashtags(userId, hashtags);
+  const collection =
+    requested ??
+    (await prisma.collection.upsert({
+      where: { userId_name: { userId, name: fallbackName } },
+      update: {},
+      create: { userId, name: fallbackName },
+    }));
 
   const mediaTypeLabel = MEDIA_LABEL[input.mediaKind];
   const baseTitle = input.caption.split("\n")[0]?.slice(0, 80);
@@ -426,7 +434,8 @@ async function saveMediaForWhatsappUser(
     select: { id: true },
   });
 
-  return { item, collection };
+  const hashtagMatched = hashtags.length > 0 ? requested !== null : null;
+  return { item, collection, hashtagMatched };
 }
 
 async function handleIncomingWhatsappMedia(
@@ -448,17 +457,31 @@ async function handleIncomingWhatsappMedia(
     return;
   }
   try {
-    const { item, collection } = await saveMediaForWhatsappUser(user.id, media);
+    const { item, collection, hashtagMatched } = await saveMediaForWhatsappUser(
+      user.id,
+      media,
+    );
+    let extra = "";
+    if (hashtagMatched === false) {
+      const all = await prisma.collection.findMany({
+        where: { userId: user.id },
+        select: { name: true },
+        orderBy: { name: "asc" },
+      });
+      extra =
+        `\n\nHashtag não bateu com coleção. Salvei em "${collection.name}". ` +
+        `Disponíveis: ${all.map((c) => `#${c.name}`).join(", ")}`;
+    }
     if (media.mediaKind === "voice") {
       void transcribeWhatsappAudio(item.id, media.mediaId);
       await sendWhatsappReply(
         waId,
-        `Salvo: voice → ${collection.name}\nTranscrevendo... vai aparecer no app em alguns segundos.`,
+        `Salvo: voice → ${collection.name}${extra}\nTranscrevendo... vai aparecer no app em alguns segundos.`,
       );
     } else {
       await sendWhatsappReply(
         waId,
-        `Salvo: ${MEDIA_LABEL[media.mediaKind]} → ${collection.name}`,
+        `Salvo: ${MEDIA_LABEL[media.mediaKind]} → ${collection.name}${extra}`,
       );
     }
   } catch (e) {
@@ -479,6 +502,19 @@ export async function dispatchWhatsappMessage(
 ): Promise<void> {
   if (message.type === "text" && message.text?.body) {
     await handleIncomingWhatsappMessage(waId, message.text.body);
+    return;
+  }
+  // If the message is media but the caption carries a URL, the user's intent
+  // is to save the link (the photo/video is usually an incidental preview).
+  // Route through the URL save path so the URL becomes the SavedItem, not
+  // the media bytes.
+  const captionWithUrl =
+    message.image?.caption ||
+    message.video?.caption ||
+    message.document?.caption ||
+    "";
+  if (captionWithUrl && extractUrl(captionWithUrl)) {
+    await handleIncomingWhatsappMessage(waId, captionWithUrl);
     return;
   }
   // Anything else with a recognized media field goes through the media

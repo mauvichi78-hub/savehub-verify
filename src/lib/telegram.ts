@@ -561,15 +561,22 @@ type MediaInput = {
   mediaType: string; // "Foto" | "Vídeo" | "Áudio" | "Documento" | "Vídeo redondo"
   caption: string;
   forwardLabel?: string;
+  hashtags?: string[];
 };
 
 async function saveMediaForUser(userId: string, input: MediaInput) {
   const fallbackName = "Roteiros";
-  const collection = await prisma.collection.upsert({
-    where: { userId_name: { userId, name: fallbackName } },
-    update: {},
-    create: { userId, name: fallbackName },
-  });
+  const requested = await resolveCollectionFromHashtags(
+    userId,
+    input.hashtags ?? [],
+  );
+  const collection =
+    requested ??
+    (await prisma.collection.upsert({
+      where: { userId_name: { userId, name: fallbackName } },
+      update: {},
+      create: { userId, name: fallbackName },
+    }));
 
   const baseTitle = input.caption.split("\n")[0]?.slice(0, 80);
   const title =
@@ -628,7 +635,9 @@ async function saveMediaForUser(userId: string, input: MediaInput) {
     },
   });
 
-  return { item, collection };
+  const hashtagMatched =
+    (input.hashtags?.length ?? 0) > 0 ? requested !== null : null;
+  return { item, collection, hashtagMatched };
 }
 
 // Pulls the file_id (and optional caption) out of whichever media kind the
@@ -683,17 +692,38 @@ async function handleMedia(ctx: Context) {
     return;
   }
 
+  // If the caption carries a URL, the user's intent is to save the link —
+  // the attached photo/video is usually an incidental preview. Delegate to
+  // the URL handler, which reads message.caption when text is absent.
+  if (extractUrl(media.caption)) {
+    await handleMessage(ctx);
+    return;
+  }
+
   const forward = readForwardInfo(message);
+  const hashtags = extractHashtags(media.caption);
 
   try {
-    const { item, collection } = await saveMediaForUser(user.id, {
+    const { item, collection, hashtagMatched } = await saveMediaForUser(user.id, {
       fileId: media.fileId,
       mediaType: media.mediaType,
       caption: media.caption,
       forwardLabel: forward?.label,
+      hashtags,
     });
+    let extra = "";
+    if (hashtagMatched === false) {
+      const all = await prisma.collection.findMany({
+        where: { userId: user.id },
+        select: { name: true },
+        orderBy: { name: "asc" },
+      });
+      extra =
+        `\nHashtag não bateu com coleção. Salvei em *${collection.name}*. ` +
+        `Disponíveis: ${all.map((c) => `#${c.name}`).join(", ")}`;
+    }
     await ctx.reply(
-      `Salvo: ${media.mediaType} → *${collection.name}*\n_id: \`${item.id.slice(-6)}\`_`,
+      `Salvo: ${media.mediaType} → *${collection.name}*${extra}\n_id: \`${item.id.slice(-6)}\`_`,
       { parse_mode: "Markdown" },
     );
   } catch (err) {
@@ -722,13 +752,16 @@ async function handleVoice(ctx: Context) {
   }
 
   const forward = readForwardInfo(message);
+  const caption = message.caption ?? "";
+  const hashtags = extractHashtags(caption);
 
   try {
     const { item, collection } = await saveMediaForUser(user.id, {
       fileId: message.voice.file_id,
       mediaType: "Voice",
-      caption: message.caption ?? "",
+      caption,
       forwardLabel: forward?.label,
+      hashtags,
     });
 
     void transcribeAndSave(item.id, message.voice.file_id);
